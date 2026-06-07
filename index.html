@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>IPL Master Control Tower - Pro Edition</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background-color: #0d1b2a; color: white; padding: 20px; margin: 0; }
+        .container { max-width: 1100px; margin: 0 auto; background: rgba(255,255,255,0.05); padding: 30px; border-radius: 16px; border: 1px solid #1b263b; }
+        .btn { color: white; border: none; padding: 12px 24px; font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer; margin: 5px; transition: 0.2s; }
+        .btn-reveal { background-color: #00b4d8; }
+        .btn-sell { background-color: #2a9d8f; }
+        .btn-sell:disabled { background-color: #1a655d; opacity: 0.3; cursor: not-allowed; }
+        .btn-unsold { background-color: #e63946; }
+        .btn-unsold:disabled { background-color: #9b2226; opacity: 0.3; cursor: not-allowed; }
+        .btn-freeze { background-color: #f77f00; }
+        .btn-reset { background-color: #6c757d; font-size: 13px; padding: 6px 12px; }
+        .grid-layout { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-top: 20px; }
+        .board { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; color: #333; }
+        .team-card { background: white; padding: 15px; border-radius: 8px; border-top: 5px solid #ff9800; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .log-box { background: #000814; color: #00f5d4; font-family: monospace; padding: 15px; border-radius: 8px; height: 150px; overflow-y: auto; font-size: 12px; border: 1px solid #001d3d; }
+        .timer-display { font-size: 48px; font-weight: bold; color: #ffd166; font-family: monospace; margin: 10px 0; }
+        .rtm-banner { background: #7209b7; color: white; padding: 10px; border-radius: 8px; margin: 10px 0; font-weight: bold; display: none; text-align: center; font-size: 18px; }
+    </style>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+</head>
+<body>
+
+<div class="container">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+            <button class="btn btn-freeze" id="freeze-btn" onclick="toggleFreeze()">🛑 FREEZE ROOM</button>
+        </div>
+        <h1 style="margin: 0; color: #00f5d4;">🔨 IPL BROADCAST MASTER DESK</h1>
+        <button class="btn btn-reset" onclick="resetTournament()">Reset Tournament</button>
+    </div>
+    
+    <div style="text-align: center; background: #14213d; padding: 25px; border-radius: 12px; margin-top: 20px; border: 1px solid #fca311;">
+        <h2 id="p-name" style="font-size: 28px; margin: 0 0 10px 0;">Awaiting Game Launch...</h2>
+        <div class="timer-display" id="clock-view">15s</div>
+        <h3 style="color:#ffd166; margin: 5px 0; font-size: 24px;">Current High Bid: <span id="curr-price">₹0.00 Cr</span></h3>
+        <h4 style="margin: 0; font-size: 18px; font-weight: normal;">High Bidder: <strong id="curr-leader" style="color:#00f5d4;">None</strong></h4>
+    </div>
+
+    <div id="rtm-broadcast-notice" class="rtm-banner">🚨 RTM WINDOW ACTIVE: Awaiting RTM Decisions...</div>
+
+    <div style="text-align: center; margin: 20px 0;">
+        <button class="btn btn-reveal" id="reveal-btn" onclick="revealProfiles()">👁️ REVEAL PROFILE</button>
+        <button class="btn btn-sell" id="sell-btn" onclick="sellPlayer()" disabled>🔨 SOLD / HAMMER</button>
+        <button class="btn btn-unsold" id="unsold-btn" onclick="unsoldPlayer()" disabled>❌ MARK UNSOLD</button>
+        <button class="btn" style="background: #ff9800; display:none;" id="acc-btn" onclick="startAccelerated()">🔁 START ACCELERATED ROUND</button>
+    </div>
+
+    <div class="grid-layout">
+        <div>
+            <h3>Live Franchise Registries</h3>
+            <div class="board" id="teams-board"></div>
+        </div>
+        <div>
+            <h3>🏆 Live Projected Standing</h3>
+            <div id="leaderboard-view" style="background: #14213d; padding: 15px; border-radius: 8px; min-height: 200px;"></div>
+        </div>
+    </div>
+
+    <h3>Live Transaction Ticker Commentary</h3>
+    <div class="log-box" id="log"></div>
+</div>
+
+<script>
+const firebaseConfig = { databaseURL: "https://ipl-multiplayer-default-rtdb.asia-southeast1.firebasedatabase.app/" };
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+let currentLotIndex = 0, currentLiveBid = 0, currentLiveLeader = "", currentLivePlayer = null;
+let isAcceleratedMode = false, currentUnsoldList = [], countdownInterval = null, isRoomFrozen = false;
+
+// EMBEDDED MASTER LIST DATA REGISTER
+const masterPlayerPool = [
+    {id: 0, name: "Aarav Malhotra", role: "Bat", origin: "Indian", base: 2.00, value: 95},
+    {id: 1, name: "Jaxson Thorne", role: "AR", origin: "Overseas", base: 2.00, value: 92},
+    {id: 2, name: "Kabir Khan", role: "Bowl", origin: "Indian", base: 1.50, value: 91},
+    {id: 3, name: "Sirisena Jayawardene", role: "Bowl", origin: "Overseas", base: 1.00, value: 89},
+    {id: 4, name: "Heinrich Bekker", role: "WK", origin: "Overseas", base: 1.00, value: 88},
+    {id: 5, name: "Devansh Joshi", role: "Bat", origin: "Indian", base: 0.50, value: 84},
+    {id: 6, name: "Ishan Verma", role: "WK", origin: "Indian", base: 0.50, value: 83},
+    {id: 7, name: "Marcus Stone", role: "Bat", origin: "Overseas", base: 0.30, value: 82},
+    {id: 8, name: "Rohan Deshmukh", role: "Bat", origin: "Indian", base: 0.20, value: 76},
+    {id: 9, name: "Sameer Khan", role: "Bat", origin: "Indian", base: 0.20, value: 75},
+    {id: 10, name: "Virat Sharma", role: "Bat", origin: "Indian", base: 2.00, value: 97},
+    {id: 11, name: "Liam Livingstone", role: "AR", origin: "Overseas", base: 2.00, value: 91},
+    {id: 12, name: "Jasprit Bumrah", role: "Bowl", origin: "Indian", base: 2.00, value: 98},
+    {id: 13, name: "Rashid Khan", role: "Bowl", origin: "Overseas", base: 2.00, value: 96},
+    {id: 14, name: "Jos Buttler", role: "WK", origin: "Overseas", base: 2.00, value: 94},
+    {id: 15, name: "Suryakumar Yadav", role: "Bat", origin: "Indian", base: 1.50, value: 93},
+    {id: 16, name: "David Warner", role: "Bat", origin: "Overseas", base: 1.50, value: 89},
+    {id: 17, name: "Shubman Gill", role: "Bat", origin: "Indian", base: 1.50, value: 90},
+    {id: 18, name: "Travis Head", role: "Bat", origin: "Overseas", base: 2.00, value: 92},
+    {id: 19, name: "Yashasvi Jaiswal", role: "Bat", origin: "Indian", base: 1.00, value: 88},
+    {id: 20, name: "Ruturaj Gaikwad", role: "Bat", origin: "Indian", base: 1.00, value: 87},
+    {id: 21, name: "Faf du Plessis", role: "Bat", origin: "Overseas", base: 1.00, value: 86},
+    {id: 22, name: "Rinku Singh", role: "Bat", origin: "Indian", base: 0.75, value: 86},
+    {id: 23, name: "Kane Williamson", role: "Bat", origin: "Overseas", base: 1.00, value: 84},
+    {id: 24, name: "Tilak Varma", role: "Bat", origin: "Indian", base: 0.50, value: 83},
+    {id: 25, name: "Tristan Stubbs", role: "Bat", origin: "Overseas", base: 0.50, value: 82},
+    {id: 26, name: "Sai Sudharsan", role: "Bat", origin: "Indian", base: 0.50, value: 81},
+    {id: 27, name: "Rovman Powell", role: "Bat", origin: "Overseas", base: 0.75, value: 80},
+    {id: 28, name: "Rajorshi Ghosh", role: "Bat", origin: "Indian", base: 0.20, value: 74},
+    {id: 29, name: "Prithvi Shaw", role: "Bat", origin: "Indian", base: 0.50, value: 78},
+    {id: 30, name: "Shimron Hetmyer", role: "Bat", origin: "Overseas", base: 0.75, value: 79},
+    {id: 31, name: "Manish Pandey", role: "Bat", origin: "Indian", base: 0.30, value: 76},
+    {id: 32, name: "Glenn Phillips", role: "Bat", origin: "Overseas", base: 0.50, value: 81},
+    {id: 33, name: "Abhimanyu Easwaran", role: "Bat", origin: "Indian", base: 0.20, value: 73},
+    {id: 34, name: "Anmolpreet Singh", role: "Bat", origin: "Indian", base: 0.20, value: 71},
+    {id: 35, name: "Hardik Pandya", role: "AR", origin: "Indian", base: 2.00, value: 94},
+    {id: 36, name: "Ravindra Jadeja", role: "AR", origin: "Indian", base: 2.00, value: 95},
+    {id: 37, name: "Glenn Maxwell", role: "AR", origin: "Overseas", base: 2.00, value: 91},
+    {id: 38, name: "Marcus Stoinis", role: "AR", origin: "Overseas", base: 1.50, value: 87},
+    {id: 39, name: "Axar Patel", role: "AR", origin: "Indian", base: 1.50, value: 89},
+    {id: 40, name: "Andre Russell", role: "AR", origin: "Overseas", base: 2.00, value: 90},
+    {id: 41, name: "Sam Curran", role: "AR", origin: "Overseas", base: 1.50, value: 86},
+    {id: 42, name: "Nitish Kumar Reddy", role: "AR", origin: "Indian", base: 0.75, value: 84},
+    {id: 43, name: "Krunal Pandya", role: "AR", origin: "Indian", base: 0.75, value: 82},
+    {id: 44, name: "Mitchell Marsh", role: "AR", origin: "Overseas", base: 1.00, value: 83},
+    {id: 45, name: "Washington Sundar", role: "AR", origin: "Indian", base: 0.75, value: 81},
+    {id: 46, name: "Rachin Ravindra", role: "AR", origin: "Overseas", base: 1.00, value: 85},
+    {id: 47, name: "Shahrukh Khan", role: "AR", origin: "Indian", base: 0.50, value: 79},
+    {id: 48, name: "Marco Jansen", role: "AR", origin: "Overseas", base: 0.75, value: 82},
+    {id: 49, name: "Rahul Tewatia", role: "AR", origin: "Indian", base: 0.50, value: 80},
+    {id: 50, name: "Ramandeep Singh", role: "AR", origin: "Indian", base: 0.30, value: 79},
+    {id: 51, name: "Ripal Patel", role: "AR", origin: "Indian", base: 0.20, value: 72},
+    {id: 52, name: "Srinivas Reddy", role: "AR", origin: "Indian", base: 0.20, value: 71},
+    {id: 53, name: "Daryl Mitchell", role: "AR", origin: "Overseas", base: 1.00, value: 83},
+    {id: 54, name: "Moeen Ali", role: "AR", origin: "Overseas", base: 1.00, value: 82},
+    {id: 55, name: "Rishabh Pant", role: "WK", origin: "Indian", base: 2.00, value: 94},
+    {id: 56, name: "Sanju Samson", role: "WK", origin: "Indian", base: 2.00, value: 92},
+    {id: 57, name: "K L Rahul", role: "WK", origin: "Indian", base: 2.00, value: 91},
+    {id: 58, name: "Nicholas Pooran", role: "WK", origin: "Overseas", base: 2.00, value: 93},
+    {id: 59, name: "Quinton de Kock", role: "WK", origin: "Overseas", base: 1.50, value: 88},
+    {id: 60, name: "Ishan Kishan", role: "WK", origin: "Indian", base: 1.50, value: 87},
+    {id: 61, name: "Phil Salt", role: "WK", origin: "Overseas", base: 1.50, value: 89},
+    {id: 62, name: "Dhruv Jurel", role: "WK", origin: "Indian", base: 0.50, value: 83},
+    {id: 63, name: "Jitesh Sharma", role: "WK", origin: "Indian", base: 0.50, value: 82},
+    {id: 64, name: "Ryan Rickelton", role: "WK", origin: "Overseas", base: 0.50, value: 81},
+    {id: 65, name: "Abhishek Porel", role: "WK", origin: "Indian", base: 0.30, value: 80},
+    {id: 66, name: "Donavon Ferreira", role: "WK", origin: "Overseas", base: 0.30, value: 78},
+    {id: 67, name: "Kumar Kushagra", role: "WK", origin: "Indian", base: 0.20, value: 72},
+    {id: 68, name: "Anuj Rawat", role: "WK", origin: "Indian", base: 0.20, value: 74},
+    {id: 69, name: "Devon Conway", role: "WK", origin: "Overseas", base: 1.00, value: 88},
+    {id: 70, name: "Srikar Bharat", role: "WK", origin: "Indian", base: 0.30, value: 76},
+    {id: 71, name: "Tom Kohler-Cadmore", role: "WK", origin: "Overseas", base: 0.50, value: 78},
+    {id: 72, name: "Upendra Yadav", role: "WK", origin: "Indian", base: 0.20, value: 69},
+    {id: 73, name: "Shai Hope", role: "WK", origin: "Overseas", base: 0.75, value: 81},
+    {id: 74, name: "Prabhsimran Singh", role: "WK", origin: "Indian", base: 0.30, value: 81},
+    {id: 75, name: "Mitchell Starc", role: "Bowl", origin: "Overseas", base: 2.00, value: 93},
+    {id: 76, name: "Pat Cummins", role: "Bowl", origin: "Overseas", base: 2.00, value: 95},
+    {id: 77, name: "Mohammed Shami", role: "Bowl", origin: "Indian", base: 2.00, value: 96},
+    {id: 78, name: "Yuzvendra Chahal", role: "Bowl", origin: "Indian", base: 1.50, value: 91},
+    {id: 79, name: "Matheesha Pathirana", role: "Bowl", origin: "Overseas", base: 1.50, value: 92},
+    {id: 80, name: "Kuldeep Yadav", role: "Bowl", origin: "Indian", base: 1.50, value: 93},
+    {id: 81, name: "Trent Boult", role: "Bowl", origin: "Overseas", base: 1.50, value: 90},
+    {id: 82, name: "Arshdeep Singh", role: "Bowl", origin: "Indian", base: 1.00, value: 89},
+    {id: 83, name: "Khaleel Ahmed", role: "Bowl", origin: "Indian", base: 0.75, value: 84},
+    {id: 84, name: "Kagiso Rabada", role: "Bowl", origin: "Overseas", base: 1.50, value: 88},
+    {id: 85, name: "Avesh Khan", role: "Bowl", origin: "Indian", base: 0.75, value: 83},
+    {id: 86, name: "Harshit Rana", role: "Bowl", origin: "Indian", base: 0.50, value: 85},
+    {id: 87, name: "Ravi Bishnoi", role: "Bowl", origin: "Indian", base: 0.75, value: 84},
+    {id: 88, name: "Mayank Yadav", role: "Bowl", origin: "Indian", base: 0.50, value: 86},
+    {id: 89, name: "Nandre Burger", role: "Bowl", origin: "Overseas", base: 0.50, value: 81},
+    {id: 90, name: "Sandeep Sharma", role: "Bowl", origin: "Indian", base: 0.50, value: 82},
+    {id: 91, name: "Mohit Sharma", role: "Bowl", origin: "Indian", base: 0.50, value: 80},
+    {id: 92, name: "Anrich Nortje", role: "Bowl", origin: "Overseas", base: 1.00, value: 82},
+    {id: 93, name: "Tushar Deshpande", role: "Bowl", origin: "Indian", base: 0.50, value: 81},
+    {id: 94, name: "Varun Chakaravarthy", role: "Bowl", origin: "Indian", base: 0.75, value: 86},
+    {id: 95, name: "Rahul Chahar", role: "Bowl", origin: "Indian", base: 0.50, value: 80},
+    {id: 96, name: "Maheesh Theekshana", role: "Bowl", origin: "Overseas", base: 0.75, value: 83},
+    {id: 97, name: "Umran Malik", role: "Bowl", origin: "Indian", base: 0.30, value: 77},
+    {id: 98, name: "Spencer Johnson", role: "Bowl", origin: "Overseas", base: 0.50, value: 79},
+    {id: 99, name: "Manav Suthar", role: "Bowl", origin: "Indian", base: 0.20, value: 74}
+];
+
+function playGavelSound() {
+    try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const swoosh = audioCtx.createOscillator(), swooshGain = audioCtx.createGain();
+        swoosh.type = 'sine'; swoosh.frequency.setValueAtTime(90, audioCtx.currentTime);
+        swoosh.frequency.exponentialRampToValueAtTime(500, audioCtx.currentTime + 0.1);
+        swooshGain.gain.setValueAtTime(0.01, audioCtx.currentTime);
+        swooshGain.gain.linearRampToValueAtTime(0.7, audioCtx.currentTime + 0.06);
+        swooshGain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.12);
+        swoosh.connect(swooshGain); swooshGain.connect(audioCtx.destination);
+        swoosh.start(); swoosh.stop(audioCtx.currentTime + 0.12);
+
+        const t = audioCtx.currentTime + 0.1;
+        const main = audioCtx.createOscillator(), strikeGain = audioCtx.createGain();
+        main.type = 'triangle'; main.frequency.setValueAtTime(240, t);
+        main.frequency.exponentialRampToValueAtTime(40, t + 0.15);
+        strikeGain.gain.setValueAtTime(2.0, t); strikeGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+        main.connect(strikeGain); strikeGain.connect(audioCtx.destination);
+        main.start(t); main.stop(t + 0.2);
+    } catch(e){}
+}
+
+function resetTournament() {
+    clearInterval(countdownInterval);
+    db.ref("auctionState").set({
+        lotIndex: 0, currentBid: 0, highestBidder: "None", isRevealed: false, phase: "main", isFrozen: false, timer: 15, rtmState: "inactive",
+        logMessage: "Broadcast Room Reset. Clean 100-Player core integrated.",
+        passes: { "Mumbai Titans": false, "Delhi Capitals": false, "Chennai Kings": false, "Bangalore Stars": false },
+        unsoldTracker: "none",
+        teams: {
+            "Mumbai Titans": { budget: 50.00, count: 0, occupied: false, roles: {Bat:0, Bowl:0, AR:0, WK:0}, power: 0, rtmLeft: 1 },
+            "Delhi Capitals": { budget: 50.00, count: 0, occupied: false, roles: {Bat:0, Bowl:0, AR:0, WK:0}, power: 0, rtmLeft: 1 },
+            "Chennai Kings": { budget: 50.00, count: 0, occupied: false, roles: {Bat:0, Bowl:0, AR:0, WK:0}, power: 0, rtmLeft: 1 },
+            "Bangalore Stars": { budget: 50.00, count: 0, occupied: false, roles: {Bat:0, Bowl:0, AR:0, WK:0}, power: 0, rtmLeft: 1 }
+        }
+    });
+}
+
+function toggleFreeze() {
+    isRoomFrozen = !isRoomFrozen;
+    db.ref("auctionState").update({ isFrozen: isRoomFrozen, logMessage: isRoomFrozen ? "🚨 ROOM FROZEN BY HOST" : "▶️ ROOM RESUMED" });
+}
+
+function startTimerEngine() {
+    clearInterval(countdownInterval);
+    countdownInterval = setInterval(() => {
+        db.ref("auctionState").once("value", (snap) => {
+            const data = snap.val();
+            if (!data || data.isFrozen || data.rtmState === "active") return;
+            let currentSec = data.timer;
+            if (currentSec > 0) {
+                db.ref("auctionState/timer").set(currentSec - 1);
+            } else if (currentSec === 0 && data.highestBidder !== "None" && data.rtmState === "inactive") {
+                clearInterval(countdownInterval);
+                db.ref("auctionState/rtmState").set("active");
+                db.ref("auctionState").update({ timer: 10, logMessage: `⏱️ TIME! Checking RTM rights for final bidder ${data.highestBidder}...` });
+                startRtmTimerEngine();
+            }
+        });
+    }, 1000);
+}
+
+function startRtmTimerEngine() {
+    let rtmInterval = setInterval(() => {
+        db.ref("auctionState").once("value", (snap) => {
+            const data = snap.val();
+            if (!data || data.isFrozen) return;
+            let rtmSec = data.timer;
+            if (rtmSec > 0) {
+                db.ref("auctionState/timer").set(rtmSec - 1);
+            } else {
+                clearInterval(rtmInterval);
+                db.ref("auctionState/rtmState").set("passed");
+                db.ref("auctionState").update({ logMessage: "🔒 RTM window expired. Host can hammer the lot." });
+            }
+        });
+    }, 1000);
+}
+
+db.ref("auctionState").on("value", (snapshot) => {
+    const data = snapshot.val();
+    if (!data) return;
+
+    currentLotIndex = data.lotIndex; currentLiveBid = data.currentBid; currentLiveLeader = data.highestBidder;
+    isAcceleratedMode = (data.phase === "accelerated"); isRoomFrozen = data.isFrozen;
+    currentUnsoldList = data.unsoldTracker && data.unsoldTracker !== "none" ? data.unsoldTracker.split(",").map(Number) : [];
+
+    document.getElementById("clock-view").innerText = `${data.timer}s`;
+    document.getElementById("clock-view").style.color = data.timer <= 5 ? "#e63946" : "#ffd166";
+    document.getElementById("freeze-btn").innerText = isRoomFrozen ? "▶️ UNFREEZE" : "🛑 FREEZE";
+    document.getElementById("rtm-broadcast-notice").style.display = data.rtmState === "active" ? "block" : "none";
+
+    const board = document.getElementById("teams-board"); board.innerHTML = "";
+    for (let team in data.teams) {
+        board.innerHTML += `
+            <div class="team-card" style="border-top-color: ${data.teams[team].occupied ? '#2a9d8f':'#e63946'}">
+                <strong>${team}</strong> (${data.teams[team].occupied ? 'Live':'Empty'})<br>
+                Purse: <strong>₹${data.teams[team].budget.toFixed(2)} Cr</strong> | RTMs: ${data.teams[team].rtmLeft}<br>
+                Slots: ${data.teams[team].count}/20
+            </div>
+        `;
+    }
+
+    const lb = document.getElementById("leaderboard-view"); lb.innerHTML = "";
+    let sortedTeams = Object.keys(data.teams).map(t => ({name: t, ...data.teams[t]})).sort((a,b) => b.power - a.power);
+    sortedTeams.forEach((t, index) => {
+        lb.innerHTML += `<div style="padding:8px; border-bottom:1px solid #334155; font-size:15px;"><strong>#${index+1} ${t.name}</strong> - Power Rating: <span style="color:#00f5d4">${t.power.toFixed(0)}</span></div>`;
+    });
+
+    if (!isAcceleratedMode && currentLotIndex < masterPlayerPool.length) {
+        currentLivePlayer = masterPlayerPool[currentLotIndex];
+        document.getElementById("p-name").innerText = `LOT #${currentLotIndex + 1}: ${data.isRevealed ? currentLivePlayer.name : '📑 Hidden Draft Entry'}`;
+        updateHostButtons(data);
+    } else if (isAcceleratedMode && currentLotIndex < currentUnsoldList.length) {
+        currentLivePlayer = masterPlayerPool.find(p => p.id === currentUnsoldList[currentLotIndex]);
+        document.getElementById("p-name").innerText = `🔁 ACCELERATED LOT #${currentLotIndex + 1}: ${data.isRevealed ? currentLivePlayer.name : '📑 Hidden Unsold Asset'}`;
+        updateHostButtons(data);
+    } else {
+        document.getElementById("p-name").innerText = !isAcceleratedMode ? "MAIN DRAFT ROUND CONCLUDED" : "AUCTION COMPLETED";
+        document.getElementById("reveal-btn").disabled = true; document.getElementById("sell-btn").disabled = true; document.getElementById("unsold-btn").disabled = true;
+        document.getElementById("acc-btn").style.display = (!isAcceleratedMode && currentUnsoldList.length > 0) ? "block" : "none";
+    }
+
+    const logBox = document.getElementById("log"); logBox.innerHTML += "<br>" + data.logMessage; logBox.scrollTop = logBox.scrollHeight;
+});
+
+function updateHostButtons(data) {
+    document.getElementById("curr-price").innerText = `₹${currentLiveBid.toFixed(2)} Cr`;
+    document.getElementById("curr-leader").innerText = currentLiveLeader;
+    document.getElementById("reveal-btn").disabled = data.isRevealed || isRoomFrozen;
+    document.getElementById("sell-btn").disabled = (currentLiveLeader === "None" || data.rtmState === "active" || isRoomFrozen);
+    document.getElementById("unsold-btn").disabled = (!data.isRevealed || currentLiveLeader !== "None" || isRoomFrozen);
+}
+
+function revealProfiles() {
+    db.ref("auctionState").update({ isRevealed: true, timer: 15, rtmState: "inactive" });
+    startTimerEngine();
+}
+
+function sellPlayer() {
+    if (currentLiveLeader === "None") return;
+    playGavelSound();
+    db.ref("auctionState").once("value", (snapshot) => {
+        let data = snapshot.val();
+        let currentTeams = data.teams;
+        let buyer = data.rtmState === "claimed" ? data.rtmClaimer : currentLiveLeader;
+        
+        currentTeams[buyer].budget -= currentLiveBid;
+        currentTeams[buyer].count += 1;
+        currentTeams[buyer].roles[currentLivePlayer.role] += 1;
+        currentTeams[buyer].power += (currentLivePlayer.value * 10); 
+
+        if(data.rtmState === "claimed") currentTeams[buyer].rtmLeft -= 1;
+
+        db.ref("auctionState").update({
+            lotIndex: currentLotIndex + 1, currentBid: 0, highestBidder: "None", isRevealed: false, rtmState: "inactive", timer: 15, teams: currentTeams,
+            passes: { "Mumbai Titans": false, "Delhi Capitals": false, "Chennai Kings": false, "Bangalore Stars": false },
+            logMessage: `🔨 HAMMER DOWN! ${currentLivePlayer.name} sold to <strong>${buyer}</strong> at ₹${currentLiveBid.toFixed(2)} Cr!`,
+            triggerGavelAudio: Math.random()
+        });
+        startTimerEngine();
+    });
+}
+
+function unsoldPlayer() {
+    db.ref("auctionState").once("value", (snapshot) => {
+        let data = snapshot.val();
+        let tracker = data.unsoldTracker === "none" ? `${currentLivePlayer.id}` : `${data.unsoldTracker},${currentLivePlayer.id}`;
+        db.ref("auctionState").update({
+            lotIndex: currentLotIndex + 1, currentBid: 0, highestBidder: "None", isRevealed: false, unsoldTracker: tracker, timer: 15,
+            passes: { "Mumbai Titans": false, "Delhi Capitals": false, "Chennai Kings": false, "Bangalore Stars": false },
+            logMessage: `❌ LOT PASSED UNSOLD: ${currentLivePlayer.name} moved to reserve pool.`
+        });
+        startTimerEngine();
+    });
+}
+
+function startAccelerated() {
+    document.getElementById("acc-btn").style.display = "none";
+    db.ref("auctionState").update({ lotIndex: 0, currentBid: 0, highestBidder: "None", isRevealed: false, phase: "accelerated", rtmState: "inactive", timer: 15 });
+    startTimerEngine();
+}
+</script>
+</body>
+</html>
